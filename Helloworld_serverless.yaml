@@ -1,0 +1,95 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  helloWorld
+
+  Sample SAM Template for helloWorld
+
+Globals:
+  Function:
+    Timeout: 3
+
+Parameters:
+  PrivateSubnets:
+    Description: "Private subnets" #We can use the export names here from the VPC stack 
+    Type: List<AWS::EC2::Subnet::Id>
+  LambdaIamRoleName:
+    Description: "IAM Role name for Lambda Function"
+    Type: String
+  LambdaFunctionName:
+    Description: "Name for Lambda Function"
+    Type: String
+  VPCID:
+    Description: "VPC ID" #We can use the export names here from the VPC stack 
+    Type: String
+
+Resources:
+  helloWorldFunction:
+    Type: AWS::Serverless::Function 
+    Properties:
+      FunctionName: !Ref LambdaFunctionName
+      VpcConfig:
+        SecurityGroupIds: 
+          - !GetAtt  lambdaSecurityGroup.GroupId
+        SubnetIds: !Ref PrivateSubnets
+      InlineCode: |
+        def handler(event, context):
+            response = {'statusCode': 200, 'body': 'Hello World.!'}
+            return response
+      Handler: index.handler
+      Runtime: python3.8
+      Events:
+        HelloWorld:
+          Type: Api 
+          Properties:
+            Path: /hello
+            Method: get
+
+  lambdaIamRole:
+    Type: AWS::IAM::Role
+    Properties: 
+      RoleName: !Ref LambdaIamRoleName
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies: 
+        - PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Action:
+                  - "logs:CreateLogGroup"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                Effect: "Allow"
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${LambdaFunctionName}:*'
+          PolicyName: "Helloworldlambda"
+
+  lambdaLogGroup:
+    Type: "AWS::Logs::LogGroup"
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${LambdaFunctionName}"
+      RetentionInDays: 14
+  
+  lambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties: 
+      VpcId: !Ref VPCID
+      GroupDescription: Access to the ECS hosts and the tasks/containers that run on them
+      SecurityGroupIngress:
+        - {IpProtocol: "tcp", FromPort: 80, ToPort: 80, CidrIp: 10.0.0.0/16}              
+
+Outputs:
+  HelloWorldApi:
+    Description: "API Gateway endpoint URL for Prod stage for Hello World function"
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/hello/"
+  HelloWorldFunction:
+    Description: "Hello World Lambda Function ARN"
+    Value: !GetAtt helloWorldFunction.Arn
+  HelloWorldFunctionIamRole:
+    Description: "Implicit IAM Role created for Hello World function"
+    Value: !GetAtt lambdaIamRole.Arn
