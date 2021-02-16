@@ -1,0 +1,124 @@
+---  
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  This template creates a Multi-AZ, multi-subnet VPC infrastructure with managed NAT gateways in the public subnet for each Availability Zone. You can
+  also create additional private subnets with dedicated custom network access control lists (ACLs). 
+
+Parameters: 
+  KeyPair: 
+    Description: The EC2 Key Pair to allow SSH access to the instance
+    Type: String
+  AMIId:
+    Description: The ImageId for EC2 Instances
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2
+  BastionIP:
+    Description: Allow SSH to instance from this IP
+    AllowedPattern: ^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/(1[6-9]|2[0-8]))$
+    ConstraintDescription: CIDR block parameter must be in the form x.x.x.x/16
+    Type: String  
+  PublicSubnet:
+    Description: Public Subnet to Launch Instance
+    Type: AWS::EC2::Subnet::Id
+  VpcId:
+    Description: VpcId for the SG  
+    Type: AWS::EC2::VPC::Id
+  ConfigBucket:
+    Description: S3 bucket name which has config files
+    Type: String
+
+Resources: 
+
+  EC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      RoleName: Helloworld-EC2
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore # this is for SSM Managed Instances.
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              -
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource: !Sub 'arn:aws:s3:::${ConfigBucket}' #Psuedo bucket, but can be used to download the config files.
+              
+      #Tags: We can use additional tags on all resources for better identification, ownership & cost control. We can also control user access using tag based approach.
+      #  - Key: Division
+      #    Value: !Ref TagDivision
+      # - Key: Environment
+      #   Value: !Ref TagEnvironment
+      #  - Key: EnvironmentName
+      #    Value: !Ref TagEnvironmentName
+      #  - Key: Product
+      #    Value: !Ref TagProduct
+  
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: Helloworld-EC2 #can be dynamic using parameters
+      Path: /
+      Roles:
+        - !Ref EC2Role
+
+  InstanceSecurityGroup: 
+    Type: AWS::EC2::SecurityGroup
+    Properties: 
+      VpcId: !Ref VpcId
+      GroupDescription: Enable SSH access via port 22
+      SecurityGroupIngress:
+        - {IpProtocol: "tcp", FromPort: 22, ToPort: 22, CidrIp: !Ref BastionIP }
+        - {IpProtocol: "tcp", FromPort: 80, ToPort: 80, CidrIp: 0.0.0.0/0 } # we can exclude this entry, this is testing purpose.
+        - {IpProtocol: "tcp", FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0 } # we can adjust this entry by allowing only sg of Load balancer, this is just for indication.
+
+  Ec2Instance: 
+    Type: AWS::EC2::Instance
+    Properties:  # can further customize with instance types, specific volumes ( EFS ) etc.,
+      KeyName: !Ref KeyPair
+      ImageId: !Ref AMIId
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      Tags:
+        - 
+          Key: Name
+          Value: Sample Instance
+      
+      UserData: #the index.html file can be downloaded from S3 bucket
+        Fn::Base64: 
+           |-
+            #!/bin/bash -xe
+            # below command will push all the user data to console system log which will allow us to view without logging to instance.
+            exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
+            echo "Hello from user-data!"
+            # get admin privileges
+            sudo su
+
+            # install httpd (Linux 2 version)
+            yum update -y
+            yum install -y httpd.x86_64
+            systemctl start httpd.service
+            systemctl enable httpd.service
+            echo "Hello World from $(hostname -f)" > /var/www/html/index.html 
+            # Can include the CFN signal to show instance resource completed only after this section.  
+      NetworkInterfaces: 
+        - AssociatePublicIpAddress: true
+          DeviceIndex: "0"
+          GroupSet: 
+            - Ref: InstanceSecurityGroup
+          SubnetId: !Ref PublicSubnet
+Outputs: 
+  InstanceId: 
+    Description: The InstanceId of the newly created EC2 instance
+    Value: !Ref Ec2Instance
